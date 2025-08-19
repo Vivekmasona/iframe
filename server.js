@@ -23,7 +23,7 @@ wss.on("connection", async (ws, request) => {
   console.log("🌍 Opening:", targetUrl);
 
   let browser;
-  let logs = []; // store logs in memory
+  let logs = [];
 
   try {
     browser = await puppeteer.launch({
@@ -35,41 +35,60 @@ wss.on("connection", async (ws, request) => {
 
     const page = await browser.newPage();
 
-    // Capture Requests
-    page.on("request", (req) => {
-      const log = {
-        type: "request",
-        url: req.url(),
-        method: req.method(),
-        resourceType: req.resourceType(),
-      };
-      logs.push(log);
-      ws.send(JSON.stringify(log));
-    });
-
-    // Capture Responses
-    page.on("response", async (res) => {
-      try {
+    // Capture Requests (only download/api related)
+    page.on("request", async (req) => {
+      if (
+        req.method() === "POST" ||
+        /download|api|convert|ajax|grab/i.test(req.url())
+      ) {
+        const postData = req.postData();
         const log = {
-          type: "response",
-          url: res.url(),
-          status: res.status(),
-          headers: res.headers(),
+          type: "request",
+          method: req.method(),
+          url: req.url(),
+          postData: postData || null,
+          headers: req.headers(),
         };
         logs.push(log);
-        ws.send(JSON.stringify(log));
+        ws.send(JSON.stringify(log, null, 2));
+      }
+    });
+
+    // Capture Responses (filter download/media)
+    page.on("response", async (res) => {
+      try {
+        const url = res.url();
+        if (
+          /download|api|convert|ajax|grab|videoplayback|\.mp4|\.mp3/i.test(url)
+        ) {
+          let text = null;
+          try {
+            text = await res.text(); // try to read body
+          } catch {}
+          const log = {
+            type: "response",
+            url,
+            status: res.status(),
+            headers: res.headers(),
+            body: text ? text.slice(0, 500) : null, // safe preview
+          };
+          logs.push(log);
+          ws.send(JSON.stringify(log, null, 2));
+        }
       } catch {}
     });
 
-    await page.goto(targetUrl, { waitUntil: "networkidle2", timeout: 60000 });
+    await page.goto(targetUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000,
+    });
 
-    // allow frontend to request full logs
+    // allow frontend to request all logs
     ws.on("message", (msg) => {
       if (msg.toString() === "getLogs") {
         ws.send(JSON.stringify({ type: "allLogs", logs }));
       }
     });
-
   } catch (err) {
     console.error("❌ Error:", err.message);
     ws.send(JSON.stringify({ error: err.message }));
