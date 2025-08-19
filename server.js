@@ -6,10 +6,8 @@ import chromium from "@sparticuz/chromium";
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// serve frontend
 app.use(express.static("public"));
 
-// WebSocket server
 const wss = new WebSocketServer({ noServer: true });
 
 wss.on("connection", async (ws, request) => {
@@ -25,43 +23,53 @@ wss.on("connection", async (ws, request) => {
   console.log("🌍 Opening:", targetUrl);
 
   let browser;
+  let logs = []; // store logs in memory
+
   try {
     browser = await puppeteer.launch({
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
       executablePath: await chromium.executablePath(),
-      headless: chromium.headless
+      headless: chromium.headless,
     });
 
     const page = await browser.newPage();
 
-    // Listen requests
+    // Capture Requests
     page.on("request", (req) => {
-      ws.send(
-        JSON.stringify({
-          type: "request",
-          url: req.url(),
-          method: req.method()
-        })
-      );
-      console.log("➡️ Request:", req.url());
+      const log = {
+        type: "request",
+        url: req.url(),
+        method: req.method(),
+        resourceType: req.resourceType(),
+      };
+      logs.push(log);
+      ws.send(JSON.stringify(log));
     });
 
-    // Listen responses
+    // Capture Responses
     page.on("response", async (res) => {
       try {
-        ws.send(
-          JSON.stringify({
-            type: "response",
-            url: res.url(),
-            status: res.status()
-          })
-        );
-        console.log("⬅️ Response:", res.url(), res.status());
+        const log = {
+          type: "response",
+          url: res.url(),
+          status: res.status(),
+          headers: res.headers(),
+        };
+        logs.push(log);
+        ws.send(JSON.stringify(log));
       } catch {}
     });
 
     await page.goto(targetUrl, { waitUntil: "networkidle2", timeout: 60000 });
+
+    // allow frontend to request full logs
+    ws.on("message", (msg) => {
+      if (msg.toString() === "getLogs") {
+        ws.send(JSON.stringify({ type: "allLogs", logs }));
+      }
+    });
+
   } catch (err) {
     console.error("❌ Error:", err.message);
     ws.send(JSON.stringify({ error: err.message }));
@@ -75,7 +83,6 @@ wss.on("connection", async (ws, request) => {
   });
 });
 
-// Upgrade for WebSocket
 const server = app.listen(PORT, () =>
   console.log(`✅ Server running http://localhost:${PORT}`)
 );
