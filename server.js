@@ -24,6 +24,7 @@ wss.on("connection", async (ws, request) => {
 
   let browser;
   let logs = [];
+  let captureEnabled = false; // 👈 initially off
 
   try {
     browser = await puppeteer.launch({
@@ -35,58 +36,47 @@ wss.on("connection", async (ws, request) => {
 
     const page = await browser.newPage();
 
-    // Capture Requests (only download/api related)
-    page.on("request", async (req) => {
-      if (
-        req.method() === "POST" ||
-        /download|api|convert|ajax|grab/i.test(req.url())
-      ) {
-        const postData = req.postData();
+    // Capture Requests
+    page.on("request", (req) => {
+      if (!captureEnabled) return; // ignore until enabled
+      const log = {
+        type: "request",
+        method: req.method(),
+        url: req.url(),
+        postData: req.postData() || null,
+      };
+      logs.push(log);
+      ws.send(JSON.stringify(log, null, 2));
+    });
+
+    // Capture Responses
+    page.on("response", async (res) => {
+      if (!captureEnabled) return; // ignore until enabled
+      try {
         const log = {
-          type: "request",
-          method: req.method(),
-          url: req.url(),
-          postData: postData || null,
-          headers: req.headers(),
+          type: "response",
+          url: res.url(),
+          status: res.status(),
         };
         logs.push(log);
         ws.send(JSON.stringify(log, null, 2));
-      }
-    });
-
-    // Capture Responses (filter download/media)
-    page.on("response", async (res) => {
-      try {
-        const url = res.url();
-        if (
-          /download|api|convert|ajax|grab|videoplayback|\.mp4|\.mp3/i.test(url)
-        ) {
-          let text = null;
-          try {
-            text = await res.text(); // try to read body
-          } catch {}
-          const log = {
-            type: "response",
-            url,
-            status: res.status(),
-            headers: res.headers(),
-            body: text ? text.slice(0, 500) : null, // safe preview
-          };
-          logs.push(log);
-          ws.send(JSON.stringify(log, null, 2));
-        }
       } catch {}
     });
 
-    await page.goto(targetUrl, {
-      waitUntil: "domcontentloaded",
-      timeout: 60000,
-    });
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
 
-    // allow frontend to request all logs
-    ws.on("message", (msg) => {
-      if (msg.toString() === "getLogs") {
+    // handle frontend messages
+    ws.on("message", async (msg) => {
+      const command = msg.toString();
+
+      if (command === "getLogs") {
         ws.send(JSON.stringify({ type: "allLogs", logs }));
+      }
+
+      if (command === "startCapture") {
+        captureEnabled = true;
+        logs = []; // reset logs fresh for capture
+        ws.send(JSON.stringify({ type: "info", message: "▶️ Capture started" }));
       }
     });
   } catch (err) {
